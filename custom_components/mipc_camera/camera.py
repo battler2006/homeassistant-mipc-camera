@@ -34,9 +34,14 @@ async def async_setup_entry(
     It creates instances of MIPCCamera for each device and adds them to Home Assistant 
     using async_add_entities.
     """
-    account = MIPCAccount(
-        username=entry.options["username"], password=entry.options["password"]
-    )
+    username = entry.data.get("username") or entry.options.get("username")
+    password = entry.data.get("password") or entry.options.get("password")
+
+    if not username or not password:
+        LOGGER.error("Missing account credentials in config entry")
+        return None
+
+    account = MIPCAccount(username=username, password=password)
 
     devices = await account.get_devices(hass=hass)
     if not devices:

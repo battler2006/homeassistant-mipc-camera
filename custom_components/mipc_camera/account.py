@@ -40,7 +40,6 @@ def _make_get_request(url: str, verify: bool = False) -> Response:
     response = get(url, timeout=TIMEOUT, verify=verify)
 
     response.raise_for_status()
-    response.close()
 
     return response
 
@@ -129,7 +128,10 @@ class MIPCAccount:
                 response: Response = await hass.async_add_executor_job(
                     _make_get_request, url, https
                 )
-                response_data = response.text
+                try:
+                    response_data = response.text
+                finally:
+                    response.close()
 
                 response_json = self.parse_response(response_data)
                 if (
@@ -397,7 +399,10 @@ class MIPCAccount:
                 response: Response = await hass.async_add_executor_job(
                     _make_get_request, url
                 )
-                response_data = response.content
+                try:
+                    response_data = response.content
+                finally:
+                    response.close()
 
                 return response_data
         except AsyncioTimeoutError:

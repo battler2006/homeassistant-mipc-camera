@@ -17,6 +17,9 @@ from homeassistant.exceptions import HomeAssistantError
 from .const import DOMAIN, LOGGER
 from .account import MIPCAccount
 
+CONF_USERNAME = "username"
+CONF_PASSWORD = "password"
+
 class CannotConnect(HomeAssistantError):
     """Error to indicate we cannot connect."""
 
@@ -37,8 +40,8 @@ def get_schema(defaults: dict[str, str] | MappingProxyType[str, str]) -> Schema:
     """
     return Schema(
         {
-            Required("username", default=defaults.get("username", "")): str,
-            Required("password", default=defaults.get("password", "")): str,
+            Required(CONF_USERNAME, default=defaults.get(CONF_USERNAME, "")): str,
+            Required(CONF_PASSWORD, default=defaults.get(CONF_PASSWORD, "")): str,
         }
     )
 
@@ -60,20 +63,22 @@ class MIPCFlowHandler(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         if user_input is not None:
             try:
+                await self.async_set_unique_id(user_input[CONF_USERNAME])
+                self._abort_if_unique_id_configured()
+
                 account = MIPCAccount(
-                    username=user_input["username"],
-                    password=user_input["password"],
+                    username=user_input[CONF_USERNAME],
+                    password=user_input[CONF_PASSWORD],
                 )
 
                 if not await account.auth(hass=self.hass):
                     raise CannotConnect
 
                 return self.async_create_entry(
-                    title=f"MIPC Account : {user_input['username']}",
-                    data={},
-                    options={
-                        "username": user_input["username"],
-                        "password": user_input["password"],
+                    title=f"MIPC Account : {user_input[CONF_USERNAME]}",
+                    data={
+                        CONF_USERNAME: user_input[CONF_USERNAME],
+                        CONF_PASSWORD: user_input[CONF_PASSWORD],
                     },
                 )
 

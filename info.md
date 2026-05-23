@@ -12,6 +12,8 @@
 
 Home Assistant custom component for viewing cameras connected to a MIPC account.
 
+This repository is a maintained fork of the original project.
+
 Site : http://www.mipcm.com/download/
 
 App : https://www.mipcm.com/
