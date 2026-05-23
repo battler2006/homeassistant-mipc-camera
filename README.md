@@ -33,9 +33,9 @@ Description available on the website : _MIPC is a mobile real-time video surveil
 - [HACS](https://hacs.xyz/) installed
 
 **Shortcut :**
-1. Open [https://my.home-assistant.io/redirect/hacs_repository/?owner=<your_github_user>&repository=homeassistant-mipc-camera&category=integration](https://my.home-assistant.io/redirect/hacs_repository/?owner=<your_github_user>&repository=homeassistant-mipc-camera&category=integration) and follow the instructions until you see the repository README on Home Assistant.
+1. Open [https://my.home-assistant.io/redirect/hacs_repository/?owner=battler2006&repository=homeassistant-mipc-camera&category=integration](https://my.home-assistant.io/redirect/hacs_repository/?owner=battler2006&repository=homeassistant-mipc-camera&category=integration) and follow the instructions until you see the repository README on Home Assistant.
 
-    [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=<your_github_user>&repository=homeassistant-mipc-camera&category=integration)
+    [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=battler2006&repository=homeassistant-mipc-camera&category=integration)
 
 2. Go to installation step 7.
 
@@ -48,7 +48,7 @@ Description available on the website : _MIPC is a mobile real-time video surveil
 **Installation :**
 1. Go to HACS `Integrations` section.
 2. In the top right-hand corner, open the menu and click on `Custom repositories`.
-3. Enter `https://github.com/<your_github_user>/homeassistant-mipc-camera` in repository field.
+3. Enter `https://github.com/battler2006/homeassistant-mipc-camera` in repository field.
 4. Select `integration` as category.
 5. Then click on `Add`.
 6. In `Integrations` section click on `MIPC Camera` card.
