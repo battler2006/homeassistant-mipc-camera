@@ -6,10 +6,11 @@ with some methods to fetch data from mipcm.com.
 from time import time
 from typing import Any
 from json import loads as json_loads
+from json import JSONDecodeError
 from re import IGNORECASE, MULTILINE, sub
 
 from asyncio import timeout, TimeoutError as AsyncioTimeoutError
-from requests import get, Response, Timeout, HTTPError
+from requests import get, Response, Timeout, HTTPError, RequestException
 
 from homeassistant.core import HomeAssistant, HomeAssistantError
 
@@ -74,15 +75,21 @@ class MIPCAccount:
         Responses from mipcm.com are formatted as follows :
         message({some_json:"but without quotation marks (as in javascript)"})
         """
-        response_json = sub(
-            r"(?P<b>[\{\[,])(?P<sb>\s?)(?P<k>[a-z0-9_\.]+)(?P<a>:)(?P<sa>\s?)",
-            '\\g<b>"\\g<k>"\\g<a>',
-            response[8:-2],
-            0,
-            IGNORECASE | MULTILINE,
-        )
+        if not response.startswith("message("):
+            raise RequestError("Unexpected response format from MIPC API")
 
-        return json_loads(response_json)
+        try:
+            response_json = sub(
+                r"(?P<b>[\{\[,])(?P<sb>\s?)(?P<k>[a-z0-9_\.]+)(?P<a>:)(?P<sa>\s?)",
+                '\\g<b>"\\g<k>"\\g<a>',
+                response[8:-2],
+                0,
+                IGNORECASE | MULTILINE,
+            )
+
+            return json_loads(response_json)
+        except (TypeError, ValueError, JSONDecodeError) as err:
+            raise RequestError("Failed to parse MIPC API response") from err
 
     def url(
         self,
@@ -165,6 +172,12 @@ class MIPCAccount:
             error = f"Timeout getting '{url}'"
         except HTTPError as err:
             error = f"Error getting '{url}' : {err}"
+        except RequestException as err:
+            error = f"Request failed for '{url}' : {err}"
+        except RequestError:
+            raise
+        except Exception as err:  # pylint: disable=broad-except
+            error = f"Unexpected error while getting '{url}' : {err}"
 
         if error:
             raise RequestError(error)
@@ -202,8 +215,11 @@ class MIPCAccount:
             path_name="HOSTS", https=True, host=BASE_HOST, hass=hass
         )
         if response:
-            self._host = response["data"]["server"]["signal"][0]
-            return self._host
+            try:
+                self._host = response["data"]["server"]["signal"][0]
+                return self._host
+            except (KeyError, IndexError, TypeError) as err:
+                raise RequestError("Invalid host payload returned by MIPC API") from err
 
         return None
 
@@ -223,8 +239,12 @@ class MIPCAccount:
         response = await self.get(path_name="CREATE_SESSION", hass=hass)
 
         if response:
-            self._qid = response["data"]["qid"]
-            return response["data"]["qid"]
+            qid = response.get("data", {}).get("qid")
+            if not qid:
+                raise RequestError("Missing qid in MIPC session response")
+
+            self._qid = qid
+            return qid
 
         return None
 
@@ -252,10 +272,13 @@ class MIPCAccount:
         )
 
         if response:
-            self._key = response["data"]["key_b2a"]
-            self._lid = response["data"]["lid"]
+            self._key = response.get("data", {}).get("key_b2a")
+            self._lid = response.get("data", {}).get("lid")
+            if not self._key or not self._lid:
+                raise RequestError("Missing DH fields in MIPC response")
+
             await self.generate_shared_key(hass=hass)
-            return response["data"]["key_b2a"]
+            return self._key
 
         return None
 
@@ -290,9 +313,12 @@ class MIPCAccount:
         )
 
         if response:
-            self._sid = response["data"]["sid"]
+            sid = response.get("data", {}).get("sid")
+            if not sid:
+                raise RequestError("Authentication failed: missing sid")
 
-            return response["data"]["sid"]
+            self._sid = sid
+            return sid
 
         return None
 

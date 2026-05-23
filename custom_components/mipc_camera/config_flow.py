@@ -64,7 +64,7 @@ class MIPCFlowHandler(ConfigFlow, domain=DOMAIN):
             try:
                 # Delay account import to avoid config-flow handler load failures
                 # when optional runtime dependencies are not ready yet.
-                from .account import MIPCAccount
+                from .account import MIPCAccount, RequestError
 
                 await self.async_set_unique_id(user_input[CONF_USERNAME])
                 self._abort_if_unique_id_configured()
@@ -85,6 +85,12 @@ class MIPCFlowHandler(ConfigFlow, domain=DOMAIN):
                     },
                 )
 
+            except RequestError as err:
+                err_msg = str(err).lower()
+                if "auth" in err_msg or "password" in err_msg or "sid" in err_msg:
+                    errors["base"] = "invalid_auth"
+                else:
+                    errors["base"] = "cannot_connect"
             except CannotConnect:
                 errors["base"] = "cannot_connect"
             except InvalidAuth:
