@@ -8,15 +8,14 @@ from typing import Any
 from json import loads as json_loads
 from json import JSONDecodeError
 from re import IGNORECASE, MULTILINE, sub
+from hashlib import md5 as hashlib_md5
+from secrets import randbits
 
 from asyncio import timeout, TimeoutError as AsyncioTimeoutError
 from requests import get, Response, Timeout, HTTPError, RequestException
 
 from homeassistant.core import HomeAssistant, HomeAssistantError
 
-from .deps.mdh import mdh
-from .deps.md5 import crypto as md5
-from .deps.mcodec import mcodec
 from .deps.crypto import encrypt
 from .const import (
     LOGGER,
@@ -29,8 +28,106 @@ from .const import (
     MAX_REQUEST_TRY,
 )
 
-mdh = mdh.mdh
-mcodec = mcodec.mcodec
+MIPC_BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-"
+
+
+def _int_to_min_bytes(value: int) -> bytes:
+    """Encode integer to minimal big-endian bytes (at least 1 byte)."""
+    if value < 0:
+        raise ValueError("Negative integers are not supported")
+    if value == 0:
+        return b"\x00"
+    return value.to_bytes((value.bit_length() + 7) // 8, "big")
+
+
+def _decode_to_bytes(value: str | int | bytes | bytearray) -> bytes:
+    """Convert JS-like number/hex input to bytes used by legacy nid builder."""
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value)
+
+    if isinstance(value, int):
+        return _int_to_min_bytes(value)
+
+    text = str(value)
+    if text.startswith("0x"):
+        hex_part = text[2:]
+        if len(hex_part) % 2:
+            hex_part = f"0{hex_part}"
+        return bytes.fromhex(hex_part)
+
+    if text == "":
+        return b""
+
+    if text.isdigit():
+        return _int_to_min_bytes(int(text))
+
+    return text.encode("latin-1", errors="ignore")
+
+
+def _encode_base64_custom(data: bytes) -> str:
+    """Encode binary payload using MIPC custom Base64 alphabet without padding."""
+    out: list[str] = []
+
+    for idx in range(0, len(data), 3):
+        chunk = data[idx : idx + 3]
+        b1 = chunk[0]
+        b2 = chunk[1] if len(chunk) > 1 else 0
+        b3 = chunk[2] if len(chunk) > 2 else 0
+
+        i1 = b1 >> 2
+        i2 = ((b1 & 0x03) << 4) | (b2 >> 4)
+        i3 = ((b2 & 0x0F) << 2) | (b3 >> 6)
+        i4 = b3 & 0x3F
+
+        out.append(MIPC_BASE64_ALPHABET[i1])
+        out.append(MIPC_BASE64_ALPHABET[i2])
+        if len(chunk) > 1:
+            out.append(MIPC_BASE64_ALPHABET[i3])
+        if len(chunk) > 2:
+            out.append(MIPC_BASE64_ALPHABET[i4])
+
+    return "".join(out)
+
+
+def _build_nid(seq: int, id_: str, shared_key: str, num: int) -> str:
+    """Re-implement legacy mcodec.nid behavior without js2py."""
+    seq_bytes = _decode_to_bytes(seq)
+    id_bytes = _decode_to_bytes(id_) if id_ else b""
+    num_bytes = _decode_to_bytes(num) if id_ else b""
+
+    static_payload = b""
+    if seq_bytes:
+        static_payload += bytes([64 + len(seq_bytes)]) + seq_bytes
+    if id_bytes:
+        static_payload += bytes([96 + len(id_bytes)]) + id_bytes
+    if num_bytes:
+        static_payload += bytes([128 + len(num_bytes)]) + num_bytes
+
+    digest_input = static_payload
+    if shared_key:
+        key_bytes = shared_key.encode("latin-1", errors="ignore")
+        digest_input += bytes([len(key_bytes)]) + key_bytes
+
+    digest_hex = hashlib_md5(digest_input).hexdigest()
+    digest_bytes = _decode_to_bytes(f"0x{digest_hex}")
+
+    token = bytes([32 + len(digest_bytes)]) + digest_bytes + static_payload
+    return _encode_base64_custom(token)
+
+
+def _gen_private_key() -> str:
+    """Generate private DH value in the same range as the legacy implementation."""
+    return str(randbits(64) or 1)
+
+
+def _gen_public_key(private_key: str) -> str:
+    """Generate public DH value."""
+    return str(pow(int(ROOT_NUM), int(private_key), int(PRIME)))
+
+
+def _gen_shared_secret(private_key: str, remote_public_key: str) -> str:
+    """Generate DH shared secret."""
+    return str(pow(int(remote_public_key), int(private_key), int(PRIME)))
 
 class RequestError(HomeAssistantError):
     """Error raised in case of failed request to MIPC."""
@@ -57,8 +154,8 @@ class MIPCAccount:
 
         self._qid: str | None = None
         self._seq: int = 0
-        self._private: str = mdh.gen_private()
-        self._public: str = mdh.gen_public(self._private)
+        self._private: str = _gen_private_key()
+        self._public: str = _gen_public_key(self._private)
         self._shared_key: str | None = None
         self._key: str | None = None
         self._lid: str | None = None
@@ -445,7 +542,7 @@ class MIPCAccount:
 
         LOGGER.debug("Generating shared key")
 
-        self._shared_key = mdh["gen_shared_secret"](self._private, self._key)
+        self._shared_key = _gen_shared_secret(self._private, self._key)
 
         return self._shared_key
 
@@ -468,9 +565,7 @@ class MIPCAccount:
 
         LOGGER.debug("Generating NID")
 
-        return mcodec.nid(
-            self._seq, id_, self._shared_key, num, None, None, md5, "hex"
-        )
+        return _build_nid(self._seq, id_, self._shared_key, num)
 
     async def clear_values(self) -> None:
         """Clears stored values for new authentication."""
@@ -484,8 +579,8 @@ class MIPCAccount:
         self._sid = None
         self._nid = None
 
-        self._private = mdh.gen_private()
-        self._public = mdh.gen_public(self._private)
+        self._private = _gen_private_key()
+        self._public = _gen_public_key(self._private)
 
     async def check_timeout(self) -> None:
         """Checks if the authentication has timed out and clears session data if necessary."""
