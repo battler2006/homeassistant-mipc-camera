@@ -373,6 +373,7 @@ class MIPCAccount:
 
         last_error: RequestError | None = None
         for bootstrap_host in BOOTSTRAP_HOSTS:
+            LOGGER.debug("Trying bootstrap host: %s", bootstrap_host)
             try:
                 response = await self.get(
                     path_name="HOSTS", https=False, host=bootstrap_host, hass=hass
@@ -400,8 +401,10 @@ class MIPCAccount:
                     raise RequestError("No usable signal host returned by MIPC API")
 
                 self._host = preferred_host
+                LOGGER.info("Using MIPC signal host: %s", self._host)
                 return self._host
             except RequestError as err:
+                LOGGER.debug("Bootstrap host failed: %s (%s)", bootstrap_host, err)
                 last_error = err
 
         if last_error is not None:

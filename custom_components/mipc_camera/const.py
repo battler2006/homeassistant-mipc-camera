@@ -14,7 +14,7 @@ BASE_HOST: Final = "https://www.mipcm.com:7443" # Base host to search for the ca
 PRIME: Final = "791658605174853458830696113306796803" # Constant in mipc source code
 ROOT_NUM: Final = "5" # Constant in mipc source code
 CAM_TIMEOUT: Final = 30000 # MIPC Session timeout in milliseconds
-MAX_REQUEST_TRY: Final = 10
+MAX_REQUEST_TRY: Final = 3
 
 PATHS: Final = {
     "HOSTS": "/cmipcgw/cmipcgw_get_req.js", # Return camera host
