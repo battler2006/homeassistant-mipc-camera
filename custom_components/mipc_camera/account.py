@@ -10,9 +10,12 @@ from json import JSONDecodeError
 from re import IGNORECASE, MULTILINE, sub
 from hashlib import md5 as hashlib_md5
 from secrets import randbits
+import ssl
 
 from asyncio import timeout, TimeoutError as AsyncioTimeoutError
-from requests import get, Response, Timeout, HTTPError, RequestException
+from requests import Response, Session, Timeout, HTTPError, RequestException
+from requests.adapters import HTTPAdapter
+from urllib3.poolmanager import PoolManager
 
 from homeassistant.core import HomeAssistant, HomeAssistantError
 
@@ -133,13 +136,64 @@ class RequestError(HomeAssistantError):
     """Error raised in case of failed request to MIPC."""
 
 
+class _LegacyTLSAdapter(HTTPAdapter):
+    """HTTP adapter that allows legacy TLS handshakes used by old MIPC endpoints."""
+
+    def __init__(self, verify: bool, *args, **kwargs) -> None:
+        self._verify = verify
+        super().__init__(*args, **kwargs)
+
+    def _build_ssl_context(self) -> ssl.SSLContext:
+        context = ssl.create_default_context()
+
+        if not self._verify:
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+
+        # Some MIPC servers still rely on legacy ciphers/protocol negotiation.
+        if hasattr(ssl, "OP_LEGACY_SERVER_CONNECT"):
+            context.options |= ssl.OP_LEGACY_SERVER_CONNECT
+
+        try:
+            context.set_ciphers("DEFAULT:@SECLEVEL=1")
+        except ssl.SSLError:
+            pass
+
+        try:
+            context.minimum_version = ssl.TLSVersion.TLSv1
+        except (AttributeError, ValueError):
+            pass
+
+        return context
+
+    def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):
+        pool_kwargs["ssl_context"] = self._build_ssl_context()
+        self.poolmanager = PoolManager(
+            num_pools=connections,
+            maxsize=maxsize,
+            block=block,
+            **pool_kwargs,
+        )
+
+
 def _make_get_request(url: str, verify: bool = False) -> Response:
     """Make request synchronously with hass.async_add_executor_job."""
-    response = get(url, timeout=TIMEOUT, verify=verify)
+    session = Session()
+    session.mount("https://", _LegacyTLSAdapter(verify=verify))
 
+    response = session.get(url, timeout=TIMEOUT, verify=verify)
     response.raise_for_status()
+    setattr(response, "_mipc_session", session)
 
     return response
+
+
+def _close_response(response: Response) -> None:
+    """Close response and attached transient session."""
+    response.close()
+    session: Session | None = getattr(response, "_mipc_session", None)
+    if session is not None:
+        session.close()
 
 
 class MIPCAccount:
@@ -235,7 +289,7 @@ class MIPCAccount:
                 try:
                     response_data = response.text
                 finally:
-                    response.close()
+                    _close_response(response)
 
                 response_json = self.parse_response(response_data)
                 if (
@@ -309,7 +363,7 @@ class MIPCAccount:
         LOGGER.debug("Getting host")
 
         response = await self.get(
-            path_name="HOSTS", https=True, host=BASE_HOST, hass=hass
+            path_name="HOSTS", https=False, host=BASE_HOST, hass=hass
         )
         if response:
             try:
@@ -525,7 +579,7 @@ class MIPCAccount:
                 try:
                     response_data = response.content
                 finally:
-                    response.close()
+                    _close_response(response)
 
                 return response_data
         except AsyncioTimeoutError:
