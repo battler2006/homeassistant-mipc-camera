@@ -11,6 +11,7 @@ from re import IGNORECASE, MULTILINE, sub
 from hashlib import md5 as hashlib_md5
 from secrets import randbits
 import ssl
+import math
 from urllib.parse import parse_qs, urlparse
 
 from asyncio import timeout, TimeoutError as AsyncioTimeoutError
@@ -51,13 +52,40 @@ def _int_to_min_bytes(value: int) -> bytes:
     return value.to_bytes((value.bit_length() + 7) // 8, "big")
 
 
+def _js_to_int32(value: str | int | float) -> int:
+    """Mimic JavaScript ToInt32 conversion used by the original mcodec helper."""
+    number = float(value)
+    if math.isnan(number) or math.isinf(number) or number == 0:
+        return 0
+
+    number = math.copysign(math.floor(abs(number)), number)
+    int32 = int(number) % (2**32)
+    if int32 >= 2**31:
+        int32 -= 2**32
+
+    return int32
+
+
+def _encode_js_number_bytes(value: str | int | float) -> bytes:
+    """Encode numbers exactly like the legacy JavaScript d() helper."""
+    number = float(value)
+    int32 = _js_to_int32(value)
+    output = bytearray()
+
+    for shift in (24, 16, 8, 0):
+        if number >= (1 << shift):
+            output.append((int32 >> shift) & 0xFF)
+
+    return bytes(output)
+
+
 def _decode_to_bytes(value: str | int | bytes | bytearray) -> bytes:
     """Convert JS-like number/hex input to bytes used by legacy nid builder."""
     if isinstance(value, (bytes, bytearray)):
         return bytes(value)
 
     if isinstance(value, int):
-        return _int_to_min_bytes(value)
+        return _encode_js_number_bytes(value)
 
     text = str(value)
     if text.startswith("0x"):
@@ -70,7 +98,7 @@ def _decode_to_bytes(value: str | int | bytes | bytearray) -> bytes:
         return b""
 
     if text.isdigit():
-        return _int_to_min_bytes(int(text))
+        return _encode_js_number_bytes(text)
 
     return text.encode("latin-1", errors="ignore")
 
