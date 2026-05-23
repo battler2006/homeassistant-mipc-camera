@@ -11,6 +11,7 @@ from re import IGNORECASE, MULTILINE, sub
 from hashlib import md5 as hashlib_md5
 from secrets import randbits
 import ssl
+from urllib.parse import parse_qs, urlparse
 
 from asyncio import timeout, TimeoutError as AsyncioTimeoutError
 from requests import Response, Session, Timeout, HTTPError, RequestException
@@ -32,6 +33,13 @@ from .const import (
 )
 
 MIPC_BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-"
+BOOTSTRAP_HOSTS = (
+    BASE_HOST,
+    "http://www.mipcm.com:7080",
+    "http://www.mipcm.com",
+    "https://oveu17.mipcm.com:7443",
+    "http://oveu17.mipcm.com:7080",
+)
 
 
 def _int_to_min_bytes(value: int) -> bytes:
@@ -217,6 +225,7 @@ class MIPCAccount:
         self._encrypted_password: str | None = None
         self._sid: str | None = None
         self._nid: str | None = None
+        self._device_tokens: dict[str, str] = {}
 
 
     def parse_response(self, response: str) -> dict:
@@ -362,17 +371,95 @@ class MIPCAccount:
 
         LOGGER.debug("Getting host")
 
-        response = await self.get(
-            path_name="HOSTS", https=False, host=BASE_HOST, hass=hass
-        )
-        if response:
+        last_error: RequestError | None = None
+        for bootstrap_host in BOOTSTRAP_HOSTS:
             try:
-                self._host = response["data"]["server"]["signal"][0]
+                response = await self.get(
+                    path_name="HOSTS", https=False, host=bootstrap_host, hass=hass
+                )
+                if not response:
+                    continue
+
+                signal_hosts = response.get("data", {}).get("server", {}).get("signal", [])
+                if not isinstance(signal_hosts, list) or not signal_hosts:
+                    raise RequestError("Invalid host payload returned by MIPC API")
+
+                # Prefer HTTP signaling host to avoid legacy TLS handshake issues.
+                preferred_host = next(
+                    (item for item in signal_hosts if isinstance(item, str) and item.startswith("http://") and "/ccm" in item),
+                    None,
+                )
+
+                if not preferred_host:
+                    preferred_host = next(
+                        (item for item in signal_hosts if isinstance(item, str) and "/ccm" in item),
+                        None,
+                    )
+
+                if not preferred_host:
+                    raise RequestError("No usable signal host returned by MIPC API")
+
+                self._host = preferred_host
                 return self._host
-            except (KeyError, IndexError, TypeError) as err:
-                raise RequestError("Invalid host payload returned by MIPC API") from err
+            except RequestError as err:
+                last_error = err
+
+        if last_error is not None:
+            raise last_error
 
         return None
+
+    @staticmethod
+    def _extract_token_from_uri(uri: str) -> str | None:
+        """Extract stream token from a play/media URI."""
+        try:
+            parsed = urlparse(uri)
+            params = parse_qs(parsed.query)
+        except Exception:
+            return None
+
+        for key in ("dtoken", "token", "auth"):
+            values = params.get(key)
+            if values and values[0]:
+                return values[0]
+
+        return None
+
+    async def _request_play_uri(self, hass: HomeAssistant, device_name: str) -> str:
+        """Request fresh play URI and store matching still-image token for device."""
+        if not self._sid:
+            await self.auth(hass=hass)
+
+        nid = await self.generate_nid(self._sid, 0, hass=hass)
+
+        response = await self.get(
+            path_name="PLAY",
+            params={
+                "hqid": self._qid,
+                "dsess": 1,
+                "dsess_nid": nid,
+                "dsess_sn": device_name,
+                "dsetup": 1,
+                "dsetup_stream": "RTSP",
+                "dsetup_trans": 1,
+                "dsetup_trans_proto": "rtsp",
+                "dtoken": "p0",
+            },
+            hass=hass,
+        )
+
+        uri = response.get("data", {}).get("MediaUri", {}).get("Uri") if response else None
+        if not uri:
+            raise RequestError("Missing media uri in play response")
+
+        token = self._extract_token_from_uri(uri)
+        if token:
+            # STILL_IMAGE usually expects p1-prefixed token while PLAY returns p0.
+            if token.startswith("p0"):
+                token = f"p1{token[2:]}"
+            self._device_tokens[device_name] = token
+
+        return uri
 
     async def get_qid(
         self, hass: HomeAssistant, in_retry_loop: bool = False
@@ -517,31 +604,8 @@ class MIPCAccount:
 
         await self.check_timeout()
 
-        if not self._sid:
-            await self.auth(hass=hass)
-
-        nid = await self.generate_nid(self._sid, 0, hass=hass)
-
         LOGGER.debug("Getting stream source")
-
-        response = await self.get(
-            path_name="PLAY",
-            params={
-                "hqid": self._qid,
-                "dsess": 1,
-                "dsess_nid": nid,
-                "dsess_sn": device_name,
-                "dsetup": 1,
-                "dsetup_stream": "RTSP",
-                "dsetup_trans": 1,
-                "dsetup_trans_proto": "rtsp",
-                "dtoken": "p0",
-            },
-            hass=hass,
-        )
-
-        if response:
-            return response["data"]["MediaUri"]["Uri"]
+        return await self._request_play_uri(hass=hass, device_name=device_name)
 
     async def get_still_image(
         self, hass: HomeAssistant, device_name: str, in_retry_loop: bool = False
@@ -555,6 +619,9 @@ class MIPCAccount:
         if not self._sid:
             await self.auth(hass=hass)
 
+        # Fetch a fresh token before each still-image request.
+        await self._request_play_uri(hass=hass, device_name=device_name)
+
         nid = await self.generate_nid(self._sid, 0, hass=hass)
 
         LOGGER.debug("Getting still image")
@@ -565,7 +632,7 @@ class MIPCAccount:
                 "dsess": 1,
                 "dsess_nid": nid,
                 "dsess_sn": device_name,
-                "dtoken": "p1_xxxxxxxxxx",
+                "dtoken": self._device_tokens.get(device_name, "p1_xxxxxxxxxx"),
                 "dencode_type": 0,
                 "dpic_types_support": 2,
                 "dflag": 2,
