@@ -15,7 +15,6 @@ from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
 
 from .const import DOMAIN, LOGGER
-from .account import MIPCAccount
 
 CONF_USERNAME = "username"
 CONF_PASSWORD = "password"
@@ -63,6 +62,10 @@ class MIPCFlowHandler(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         if user_input is not None:
             try:
+                # Delay account import to avoid config-flow handler load failures
+                # when optional runtime dependencies are not ready yet.
+                from .account import MIPCAccount
+
                 await self.async_set_unique_id(user_input[CONF_USERNAME])
                 self._abort_if_unique_id_configured()
 
